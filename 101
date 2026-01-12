@@ -1,0 +1,800 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+
+// A simple debounce function to avoid external library imports
+const debounce = (func, delay) => {
+  let timeoutId;
+  return (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      func.apply(null, args);
+    }, delay);
+  };
+};
+
+const App = () => {
+  // Global variables provided by the Canvas environment
+  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+  const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+  // State management
+  const [activeTab, setActiveTab] = useState('principles');
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [heshkafaRatings, setHeshkafaRatings] = useState({});
+  const [hitbonenutRatings, setHitbonenutRatings] = useState({});
+  const [generatedPlan, setGeneratedPlan] = useState('');
+  const [generatedSummary, setGeneratedSummary] = useState('');
+  const [generatedGoals, setGeneratedGoals] = useState('');
+  const [generatedControlPlan, setGeneratedControlPlan] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [db, setDb] = useState(null);
+  const [userId, setUserId] = useState(null);
+  // Authentication status: 'loading', 'authenticated', 'unauthenticated', 'error'
+  const [authStatus, setAuthStatus] = useState('loading');
+
+  // Refs for auto-scrolling
+  const chatEndRef = useRef(null);
+  const documentsRef = useRef(null);
+
+  // Function to save ratings to Firestore
+  const saveRatings = useCallback(async (heshkafa, hitbonenut) => {
+    if (!db || !userId) {
+      console.error("Firestore instance or User ID is not ready. Cannot save data.");
+      return;
+    }
+    try {
+      const ratingsDocRef = doc(db, `artifacts/${appId}/users/${userId}/data/ratings`);
+      await setDoc(ratingsDocRef, {
+        heshkafa,
+        hitbonenut,
+        lastUpdated: new Date()
+      }, { merge: true });
+      console.log("Ratings saved successfully.");
+    } catch (e) {
+      console.error("Error saving ratings:", e);
+    }
+  }, [db, userId, appId]);
+
+  // Debounced function to save ratings
+  const debouncedSaveRatings = useCallback(
+    debounce((heshkafa, hitbonenut) => {
+      saveRatings(heshkafa, hitbonenut);
+    }, 2000), // 2 seconds debounce
+    [saveRatings]
+  );
+
+  // Initialize Firebase and listen to auth state
+  useEffect(() => {
+    if (Object.keys(firebaseConfig).length === 0) {
+      console.error("Firebase config is empty. Cannot initialize.");
+      setAuthStatus('error');
+      return;
+    }
+
+    const app = initializeApp(firebaseConfig);
+    const dbInstance = getFirestore(app);
+    const authInstance = getAuth(app);
+    setDb(dbInstance);
+
+    const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
+      if (user) {
+        setUserId(user.uid);
+        setAuthStatus('authenticated');
+        console.log("Firebase auth ready. User ID:", user.uid);
+        
+        // Listen for Firestore data only after successful authentication
+        const ratingsDocRef = doc(dbInstance, `artifacts/${appId}/users/${user.uid}/data/ratings`);
+        const unsubscribeFirestore = onSnapshot(ratingsDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setHeshkafaRatings(data.heshkafa || {});
+            setHitbonenutRatings(data.hitbonenut || {});
+            console.log("Ratings data loaded from Firestore.");
+          } else {
+            console.log("No ratings data found. Initializing empty ratings.");
+            setHeshkafaRatings({});
+            setHitbonenutRatings({});
+          }
+        }, (error) => {
+          console.error("Error setting up onSnapshot listener:", error);
+          setAuthStatus('error');
+        });
+
+        return () => unsubscribeFirestore(); // Cleanup listener
+      } else {
+        setAuthStatus('unauthenticated');
+        try {
+          if (initialAuthToken) {
+            await signInWithCustomToken(authInstance, initialAuthToken);
+          } else {
+            await signInAnonymously(authInstance);
+          }
+        } catch (e) {
+          console.error("Error signing in:", e);
+          setAuthStatus('error');
+        }
+      }
+    });
+
+    return () => unsubscribeAuth(); // Cleanup listener
+  }, []);
+
+  // Auto-scroll logic
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [chatHistory]);
+
+  useEffect(() => {
+    if (documentsRef.current) {
+      setTimeout(() => {
+        documentsRef.current.scrollIntoView({ behavior: 'auto' });
+      }, 100);
+    }
+  }, [generatedPlan, generatedSummary, generatedGoals, generatedControlPlan]);
+
+  // Foundational principles based on research
+  const principles = [
+    { title: "שיתוף ותכנון משותף", description: "תכנון משותף עם צוות הדרכה ועם צוות המסגרת תוך התייחסות לאתגרי המסגרת החינוכית, מטרות ההדרכה וצרכי המשתתפים. תהליך זה מבטיח שהתוכנית תהיה רלוונטית ומועילה לכולם.", icon: "👥" },
+    { title: "התאמה ממוקדת צרכים", description: "ההדרכה מותאמת לשותפי הדרך (צוותים חינוכיים וצוותי הדרכה) תוך התחשבות בשונותם ותפקידיהם. עקרון זה מבטיח מענים מיטביים לצרכים הייחודיים של כל חבר צוות.", icon: "🎯" },
+    { title: "בקרה והערכה מתמשכת", description: "תהליכי הערכה מתמשכים, כמותיים ואיכותיים, לאורך כל התוכנית. זיהוי פערים בזמן אמת ושיפור דינמי של התוכנית.", icon: "📊" },
+    { title: "קישור ישיר ליעדים", description: "התוכנית מתמודדת ישירות עם אתגרים קונקרטיים ומשיגה תוצאות מוגדרות מראש. הבטחת קשר ישיר למציאות היומיומית של המסגרת החינוכית ומדיניות המשרד.", icon: "🔗" },
+    { title: "למידה ושיפור רפלקטיביים", description: "מנגנונים רפלקטיביים קבועים המאפשרים לצוות ההדרכה ולצוות הניהול להפיק במשותף לקחים מניסיון העבר ושימוש בכלי ההתבוננות והשקפה הקיימים.", icon: "🔄" },
+    { title: "אפקטיביות מדודה", description: "הערכת תפוקות, תוצאות ויעילות על בסיס מדדים אובייקטיביים ומודלים מוכחים כמו SMART ו-SWOT.", icon: "📈" }
+  ];
+
+  // Heshkafa assessment questions
+  const heshkafaQuestions = [
+    { id: '1a', text: 'האם קיימת תחושת שביעות רצון בקרב מנהלת המסגרת במקום עבודתך?', category: 'שביעות רצון' },
+    { id: '1b', text: 'האם קיימת תחושת שביעות רצון בקרב הצוותים החינוכיים?', category: 'שביעות רצון' },
+    { id: '1c', text: 'האם קיימת שביעות רצון בקרב המודרכים?', category: 'שביעות רצון' },
+    { id: '2a', text: 'האם קיימות סדירויות למפגשים רב מקצועיים?', category: 'סדירויות' },
+    { id: '2b', text: 'האם קיימות סדירויות למפגשים עם המודרכות?', category: 'סדירויות' },
+    { id: '2c', text: 'האם קיים שיתוף פעולה בין מנהלת מסגרת חינוכית אליך כמדריכה ו/או לצוות שלך?', category: 'סדירויות' },
+    { id: '3a', text: 'האם ההדרכה עסקה באחד מאתגרי המסגרת החינוכית?', category: 'אפקטיביות' },
+    { id: '3b', text: 'האם צוות ההדרכה ו/או את השגת את התוצאות המצופות בקידום האתגר המסגרת החינוכית?', category: 'אפקטיביות' },
+    { id: '3c', text: 'כיצד תדרגי את מידת ההשפעה שלך/של הצוות שלך על המודרכים?', category: 'אפקטיביות' },
+  ];
+
+  // Hitbonenut (Reflection) assessment questions
+  const hitbonenutQuestions = [
+    { id: '4a', text: 'הצוות שותף לתכנון ההדרכה בהתאמה לאתגרי המסגרת החינוכית, לשונות המודרכים ולתדירות המפגשים', category: 'תכנון ההדרכה' },
+    { id: '4b', text: 'התקיים שיח בין מנהל המסגרת החינוכית ומי מטעמו לשם מיפוי צוות המורים שיודרך וצרכיהם', category: 'שיח מיפוי' },
+    { id: '4c', text: 'כל מפגשי ההדרכה התקיימו כמתוכנן ובהלימה לתכנון', category: 'קיום מפגשים' },
+    { id: '4d', text: 'קביעת סדירויות לשיח שוטף וצמתי הערכת ההדרכה עם מנהל המסגרת החינוכית וצוות המודרכים', category: 'סדירויות וצמתים' },
+    { id: '4e', text: 'קיימים ערוצי תקשורת מוסכמים למתן מענים מיטביים לצרכי הצוות המודרך', category: 'תקשורת' },
+    { id: '4f', text: 'המדריכה משמשת כמומחית בתחום הידע, המיומנויות והפרקטיקות', category: 'מקצועיות' },
+    { id: '4g', text: 'במפגשים מנתחים עדויות משדה ההוראה לקידום תהליכי הלמידה וההוראה', category: 'ניתוח נתונים' },
+    { id: '4h', text: 'תהליך ההדרכה עוסק בפיתוח מערכי הוראה מגוונים ורלוונטיים', category: 'פיתוח תוכן' },
+  ];
+
+  // Function to update ratings and trigger a debounced save
+  const handleRatingChange = useCallback((type, questionId, rating) => {
+    let newHeshkafaRatings = heshkafaRatings;
+    let newHitbonenutRatings = hitbonenutRatings;
+
+    if (type === 'heshkafa') {
+      newHeshkafaRatings = { ...heshkafaRatings, [questionId]: rating };
+      setHeshkafaRatings(newHeshkafaRatings);
+    } else {
+      newHitbonenutRatings = { ...hitbonenutRatings, [questionId]: rating };
+      setHitbonenutRatings(newHitbonenutRatings);
+    }
+    
+    // Trigger debounced save
+    if (authStatus === 'authenticated') {
+      debouncedSaveRatings(newHeshkafaRatings, newHitbonenutRatings);
+    }
+  }, [heshkafaRatings, hitbonenutRatings, authStatus, debouncedSaveRatings]);
+
+  const clearAllGenerated = () => {
+    setGeneratedPlan('');
+    setGeneratedSummary('');
+    setGeneratedGoals('');
+    setGeneratedControlPlan('');
+  };
+
+  // Build advanced context for the AI model
+  const buildAdvancedContext = (userMessage, hasRatings, ratingsData = '') => {
+    return `
+You are a leading expert in educational guidance programs, with extensive experience in the Israeli education system.
+Your knowledge is based on foundational documents of the Ministry of Education and advanced research in the field.
+
+=== Core Principles for Guidance Programs ===
+1. Joint Planning and Collaboration: The process addresses the challenges of the educational framework and the needs of the participants.
+2. Needs-Focused Customization: The guidance is adapted to the diversity and roles of the partners.
+3. Continuous Monitoring and Evaluation: Continuous evaluation processes and real-time gap identification.
+4. Direct Link to Goals: Direct tackling of concrete challenges of the educational framework.
+5. Reflective Learning and Improvement: Regular reflective mechanisms for drawing lessons (based on the MATAR model).
+6. Measured Effectiveness: Evaluation of outputs, outcomes, and efficiency (based on SMART and SWOT models).
+
+=== Recommended Evaluation Models ===
+- SMART Model (Specific, Measurable, Achievable, Relevant, Time-bound)
+- SWOT Analysis (Strengths, Weaknesses, Opportunities, Threats)
+- Effectiveness Evaluation: Outputs + Outcomes + Efficiency
+- MATAR Model: Holistic Reflective Descriptive Model
+
+=== Recommended Monitoring Plan Structure ===
+- Quarterly monitoring (3 times a year)
+- Objective metrics, not just subjective feelings
+- Systematic documentation of processes and results
+- Continuous improvement loop using "Heshkafa" and "Hitbonenut" tools
+
+${hasRatings ? `=== Evaluation Data from the Educational Framework ===\n${ratingsData}` : ''}
+
+=== The current question ===
+${userMessage}
+
+Please respond in Hebrew, in a professional yet warm and supportive tone, using relevant information from the documents and principles listed above.
+`;
+  };
+
+  // Send a message to the chat - adapted for Gemini API
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || isProcessing) return;
+
+    const userMessage = chatInput;
+    setChatHistory(prev => [...prev, { role: 'user', text: userMessage }]);
+    setChatInput('');
+    setIsProcessing(true);
+
+    try {
+      const hasRatings = Object.values(heshkafaRatings).length > 0 || Object.values(hitbonenutRatings).length > 0;
+      let ratingsData = '';
+      
+      if (hasRatings) {
+        ratingsData = formatRatingsForPrompt(heshkafaRatings, heshkafaQuestions, 'השקפה') +
+          formatRatingsForPrompt(hitbonenutRatings, hitbonenutQuestions, 'התבוננות בהדרכה');
+      }
+
+      const context = buildAdvancedContext(userMessage, hasRatings, ratingsData);
+      
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: context }] }],
+      };
+
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${""}`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const text = result.candidates[0].content.parts[0].text;
+        setChatHistory(prev => [...prev, { role: 'assistant', text }]);
+      } else {
+        throw new Error('Invalid response format');
+      }
+      
+    } catch (error) {
+      console.error("Error calling API:", error);
+      setChatHistory(prev => [...prev, {
+        role: 'assistant',
+        text: 'מתנצל, אירעה שגיאה בהתחברות למערכת. אנא נסה שוב מאוחר יותר או פנה לתמיכה טכנית.'
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Format ratings for the advanced prompt
+  const formatRatingsForPrompt = (ratings, questions, category) => {
+    if (Object.keys(ratings).length === 0) return '';
+    
+    let text = `\n=== דירוגי ${category} ===\n`;
+    const categorizedData = {};
+    
+    for (const q of questions) {
+      if (!categorizedData[q.category]) {
+        categorizedData[q.category] = [];
+      }
+      categorizedData[q.category].push({
+        question: q.text,
+        rating: ratings[q.id] || 'לא הוערך',
+        id: q.id
+      });
+    }
+    
+    for (const cat in categorizedData) {
+      text += `\n** ${cat} **\n`;
+      for (const item of categorizedData[cat]) {
+        text += `- ${item.question}: ${item.rating}/4\n`;
+      }
+    }
+    
+    return text;
+  };
+
+  // Functions to generate plans, summaries, and goals
+  const generateContent = useCallback(async (type) => {
+    setIsProcessing(true);
+    clearAllGenerated();
+    
+    const hasRatings = Object.values(heshkafaRatings).length > 0 || Object.values(hitbonenutRatings).length > 0;
+    
+    let prompt;
+    if (hasRatings) {
+      const heshkafaText = formatRatingsForPrompt(heshkafaRatings, heshkafaQuestions, 'השקפה');
+      const hitbonenutText = formatRatingsForPrompt(hitbonenutRatings, hitbonenutQuestions, 'התבוננות בהדרכה');
+
+      // Logic for creating the prompt based on the requested content type
+      switch (type) {
+        case 'workPlan':
+          prompt = `
+אתה מומחה מוביל בתוכניות הדרכה חינוכיות, בעל ידע נרחב במודלי SMART ו-SWOT.
+עליך לנתח את הדירוגים הבאים וליצור תוכנית עבודה מקצועית ומפורטת.
+${heshkafaText}
+${hitbonenutText}
+על בסיס הדירוגים הללו, צור תוכנית עבודה מקיפה הכוללת:
+1.  **ניתוח מצב נוכחי**
+- זיהוי נקודות חוזק מרכזיות (דירוגים 3-4)
+- אבחון אזורי שיפור קריטיים (דירוגים 1-2)
+- ניתוח מגמות והקשרים בין התחומים השונים
+- 
+2.  **המלצות אסטרטגיות**
+- יעדים מרכזיים לשיפור (מבוססי מודל SMART)
+- פעולות קונקרטיות ומדידות לכל יעד
+- התייחסות לעקרונות הבקרה וההערכה הרציפה
+3.  **תכנית יישום מעשית**
+- לוח זמנים מפורט (רבעונים ואבני דרך)
+- הגדרת אחריות ותפקידים
+- מדדי הצלחה אובייקטיביים
+4.  **מנגנון בקרה ורפלקציה**
+- נקודות עצירה לבדיקה ואיון
+- כלים להערכת התקדמות
+- תהליך הפקת לקחים
+          `;
+          break;
+        case 'summary':
+          prompt = `
+אתה יועץ חינוכי מנוסה המתמחה בהתבוננות רפלקטיבית ומכיר את מודל מטר"ה.
+נתונים לך דירוגים של מנהל מסגרת חינוכית:
+${heshkafaText}
+${hitbonenutText}
+כתוב סיכום רפלקטיבי מעמיק ומעודד למנהל המסגרת החינוכית.
+הסיכום צריך לכלול:
+- **הכרה והערכה** של הנקודות החזקות (דירוגים גבוהים)
+- **התבוננות עדינה** על אזורים לצמיחה (דירוגים נמוכים יותר)
+- **חיבור לחזון** החינוכי הרחב יותר של המוסד
+- **עידוד לתהליך מתמשך** של רפלקציה ושיפור
+השתמש במטאפורות חינוכיות עשירות (גינון, בנייה, מסע) ובטון חם ותומך.
+הסיכום צריך להיות באורך של 2-4 פסקאות פרוזה זורמת ומעוררת השראה.
+אל תכתוב רשימות או נקודות - רק טקסט רפלקטיבי עשיר.
+          `;
+          break;
+        case 'goals':
+          prompt = `
+אתה מומחה בניהול חינוכי ובניית יעדים SMART, ובעל ידע במודל SWOT. נתונים לך דירוגים של מנהל מסגרת חינוכית:
+${heshkafaText}
+${hitbonenutText}
+צור 4-6 יעדים SMART מקצועיים ומפורטים, המתמקדים בעיקר בתחומים שקיבלו דירוגים נמוכים יותר (1-2).
+לכל יעד, פרט בצורה המקצועית ביותר:
+**יעד [מספר]: [שם היעד]**
+- **Specific (ספציפי):** מה בדיוק יושג ואיך
+- **Measurable (מדיד):** איך נמדוד הצלחה (מדדים כמותיים ואיכותיים)
+- **Achievable (בר השגה):** מדוע היעד ריאלי ואיך נוודא זאת
+- **Relevant (רלוונטי):** הקשר למטרות הארגוניות והחינוכיות ומדיניות המשרד.
+- **Time-bound (מוגבל בזמן):** לוח זמנים מפורט עם אבני דרך
+הקפד על:
+- התמקדות בדירוגים הנמוכים ביותר
+- יעדים מעשיים ובני מימוש במסגרת חינוכית
+- קישור למערכת הבקרה הרבעונית המומלצת
+- שילוב עקרונות הרפלקציה וההערכה המתמשכת
+          `;
+          break;
+        case 'controlPlan':
+          prompt = `
+אתה מומחה לבקרה חינוכית ובעל ניסיון רב בניהול תוכניות הדרכה.
+נתונים לך דירוגים של מנהל מסגרת חינוכית. עליך לנתח אותם באופן ביקורתי ולערוך תוכנית בקרה רבעונית (3 פעמים בשנה) שתסייע למדריכה לשפר את האפקטיביות.
+${heshkafaText}
+${hitbonenutText}
+תוכנית הבקרה צריכה לכלול:
+1.  **ניתוח ביקורתי של הנתונים:** זהה פערים אפשריים בין הדירוג העצמי לבין תוצאות צפויות, תוך התייחסות למדדים אובייקטיביים.
+2.  **המלצות לפעולות:** הצג 3-5 פעולות ספציפיות שהמדריכה צריכה לבצע בכל רבעון כדי להתמודד עם הנקודות החלשות שזוהו. התמקד בשיפור האפקטיביות המדודה (תפוקות, תוצאות, יעילות).
+3.  **כלי בקרה ורפלקציה:** המלץ על כלי מטר"ה ספציפיים וכלים אחרים מהמסמכים שהוזנו לך, שבהם המדריכה יכולה להשתמש כדי לעקוף דיווח עצמי מוטעה (לדוגמה, איסוף עדויות מהשטח, משוב מעמיתים, ניתוח נתונים ממוחשבים).
+4.  **מנגנון שיפור:** הגדר את לוח הזמנים ל-3 שלבי הבקרה השנתיים, והסבר איך להשתמש בתוצאות של כל שלב כדי ללמוד ולשפר את תוכנית ההדרכה באופן מתמשך.
+          `;
+          break;
+      }
+    } else {
+      // Alternate prompt in case there are no ratings
+      switch (type) {
+        case 'workPlan':
+          prompt = `צור דוגמה מקיפה לתוכנית עבודה מומלצת עבור צוות הדרכה חינוכי, המבוססת על עקרונות מתקדמים בתחום:
+1.  **ניתוח מצב נוכחי**
+- זיהוי נקודות חוזק וחולשה אופייניות
+- ניתוח SWOT מקיף של תוכנית הדרכה טיפוסית
+2.  **המלצות אסטרטגיות**
+- 3-5 יעדים SMART מרכזיים
+- פעולות קונקרטיות לכל יעד
+- קישור לעקרונות הבקרה וההערכה
+3.  **תכנית יישום**
+- לוח זמנים רבעוני
+- חלוקת תפקידים ואחריות
+- מדדי הצלחה מדידים
+4.  **מנגנון בקרה**
+- תכנית בקרה רבעונית
+- שימוש בכלי השקפה והתבוננות
+- תהליכי רפלקציה והפקת לקחים
+          `;
+          break;
+        case 'summary':
+          prompt = `כתוב סיכום רפלקטיבי מעורר השראה עבור תוכנית הדרכה חינוכית כללית.
+הסיכום צריך להתמקד בתהליך הצמיחה המקצועית, בחשיבות הרפלקציה, ובהזדמנויות לפיתוח.
+השתמש במטאפורות חינוכיות עשירות ובטון מעודד ותומך.
+2-3 פסקאות פרוזה זורמת בלבד.
+          `;
+          break;
+        case 'goals':
+          prompt = `צור 4 דוגמאות איכותיות של יעדים SMART עבור תוכנית הדרכה חינוכית כללית.
+לכל יעד, פרט:
+- **Specific (ספציפי):**
+- **Measurable (מדיד):**
+- **Achievable (בר השגה):**
+- **Relevant (רלוונטי):**
+- **Time-bound (מוגבל בזמן):**
+התמקד בתחומים מרכזיים: תכנון הדרכה, תקשורת, מעקב ובקרה, ופיתוח מקצועי.
+          `;
+          break;
+        case 'controlPlan':
+          prompt = `צור דוגמה מקיפה של תוכנית בקרה רבעונית עבור צוות הדרכה חינוכי.
+התוכנית צריכה לכלול:
+1.  **מטרות הבקרה:** מה מטרת התהליך (לדוגמה, לוודא שהיעדים מושגים, לזהות פערים).
+2.  **שלבי הבקרה:** תאר 3 שלבים רבעוניים (רבעון 1-3) עם יעדים, פעולות וכלי הערכה (לדוגמה, כלי השקפה והתבוננות).
+3.  **מנגנון התמודדות עם הטיה:** הצע כיצד להתמודד עם דיווח עצמי מוטעה באמצעות איסוף נתונים אובייקטיביים.
+4.  **מנגנון למידה ושיפור:** הסבר כיצד להשתמש בתוצאות הבקרה כדי ללמוד ולשפר את תוכנית ההדרכה באופן מתמשך.
+          `;
+          break;
+      }
+    }
+    
+    try {
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      };
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${""}`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const text = result.candidates[0].content.parts[0].text;
+        if (type === 'workPlan') setGeneratedPlan(text);
+        if (type === 'summary') setGeneratedSummary(text);
+        if (type === 'goals') setGeneratedGoals(text);
+        if (type === 'controlPlan') setGeneratedControlPlan(text);
+      } else {
+        throw new Error('Invalid response format');
+      }
+    } catch (error) {
+      console.error("Error calling API:", error);
+      const errorMessage = 'שגיאה בחיבור לשרת או ביצירת התוכן. אנא בדוק את החיבור לאינטרנט ונסה שוב.';
+      if (type === 'workPlan') setGeneratedPlan(errorMessage);
+      if (type === 'summary') setGeneratedSummary(errorMessage);
+      if (type === 'goals') setGeneratedGoals(errorMessage);
+      if (type === 'controlPlan') setGeneratedControlPlan(errorMessage);
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [heshkafaRatings, hitbonenutRatings, appId]);
+
+  // Render function for a single rating question
+  const renderRating = useCallback((question, ratings, type) => (
+    <div key={question.id} className="mb-4 bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-sm">
+      <h4 className="text-base font-semibold text-gray-800 leading-snug">{question.text}</h4>
+      <div className="flex items-center mt-2" role="radiogroup" aria-label={`Rating for ${question.text}`}>
+        {[1, 2, 3, 4].map(rating => (
+          <button
+            key={rating}
+            className={`
+              w-10 h-10 mx-1 rounded-full text-sm font-medium
+              transition-all duration-200 ease-in-out
+              ${ratings[question.id] === rating
+                ? 'bg-blue-600 text-white shadow-lg transform scale-110'
+                : 'bg-white text-gray-600 hover:bg-gray-200 hover:scale-105'
+              }
+              border border-gray-300
+            `}
+            onClick={() => handleRatingChange(type, question.id, rating)}
+            role="radio"
+            aria-checked={ratings[question.id] === rating}
+            aria-label={`${rating} out of 4`}
+          >
+            {rating}
+          </button>
+        ))}
+      </div>
+    </div>
+  ), [handleRatingChange]);
+
+  return (
+    <div className="flex flex-col h-full bg-gray-100 font-sans text-right" dir="rtl">
+      <style>{`
+        body {
+          margin: 0;
+          font-family: 'Inter', sans-serif;
+          background-color: #f3f4f6;
+        }
+      `}</style>
+      
+      {/* Header and Tabs */}
+      <header className="bg-white shadow-md p-4 sticky top-0 z-50">
+        <h1 className="text-3xl font-bold text-center text-blue-800">כלי הערכה</h1>
+        <p className="text-center text-gray-500 mt-1 text-sm md:text-base leading-snug">
+         כלי הערכה לבניית תוכנית הדרכה צוותית/אישית 
+          <br />
+         מבוססת כלים להערכת אפקטיביות של משרד החינוך
+        </p>
+        <div className="flex flex-wrap justify-center gap-2 mt-4 text-sm font-medium">
+          <button
+            onClick={() => setActiveTab('principles')}
+            className={`px-4 py-2 rounded-full transition-colors duration-200 ${activeTab === 'principles' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+          >
+           עקרונות מנחים 
+          </button>
+          <button
+            onClick={() => setActiveTab('assessment')}
+            className={`px-4 py-2 rounded-full transition-colors duration-200 ${activeTab === 'assessment' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+          >
+            הערכה 📝
+          </button>
+          <button
+            onClick={() => setActiveTab('generated')}
+            className={`px-4 py-2 rounded-full transition-colors duration-200 ${activeTab === 'generated' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+          >
+            תוכניות שנוצרו ✨
+          </button>
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`px-4 py-2 rounded-full transition-colors duration-200 ${activeTab === 'chat' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+          >
+            צ'אט AI
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto p-4 md:p-8">
+        {activeTab === 'principles' && (
+          <div className="max-w-4xl mx-auto space-y-8 animate-fade-in-up">
+            <h2 className="text-2xl md:text-3xl font-bold text-center text-gray-800">העקרונות המנחים שלנו</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {principles.map((p, index) => (
+                <div key={index} className="bg-white p-6 rounded-2xl shadow-lg border border-gray-200 transform hover:scale-105 transition-transform duration-300 ease-in-out">
+                  <div className="flex items-center mb-3">
+                    <span className="text-3xl mr-3">{p.icon}</span>
+                    <h3 className="text-lg font-bold text-gray-900">{p.title}</h3>
+                  </div>
+                  <p className="text-gray-600 text-sm leading-relaxed">{p.description}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-8 text-center">
+              <h3 className="text-xl font-bold mb-4">כלים ליצירת יעדים:</h3>
+              <div className="flex justify-center gap-4 flex-wrap">
+                <a 
+                  href="https://inbal-deutsch.com/2019/09/smart/" 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="px-4 py-2 bg-red-600 text-white rounded-full shadow-lg hover:bg-red-700 transition-colors duration-200"
+                >
+                  למידה על מודל SMART
+                </a>
+                <a 
+                  href="https://share.google/images/GIYv0P3rNqCgSkKVD" 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="px-4 py-2 bg-red-600 text-white rounded-full shadow-lg hover:bg-red-700 transition-colors duration-200"
+                >
+                  למידה על מודל SWOT
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'assessment' && (
+          <div className="max-w-4xl mx-auto space-y-8 animate-fade-in-up">
+            <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-200">
+              <h2 className="text-2xl md:text-3xl font-bold text-gray-800 text-center mb-6">כלי הערכה: התבוננות והשקפה</h2>
+              
+              {/* New explanatory text */}
+              <div className="mb-8 p-4 bg-blue-50 rounded-lg border-blue-200 text-blue-800 text-sm">
+                <p className="font-semibold">מטרת הכלי להתבוננות במהלך השקפה:</p>
+                <p>תיעוד והערכת האירועים והפעולות המתרחשים במהלך השקפה במסגרת החינוכית שלך.</p>
+                <p>השאלון יספק לך מידע על אפקטיביות מהלך "מורים מובילים - השקפה" ויסייע בקבלת החלטות לקראת שנת הלימודים הבאה, תשפ"ו.</p>
+              </div>
+
+              {/* Heshkafa questions */}
+              <div className="mb-8">
+                <h3 className="text-xl md:text-2xl font-bold text-blue-700 mb-4">דירוג השקפה (4-1):</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {heshkafaQuestions.map(q => renderRating(q, heshkafaRatings, 'heshkafa'))}
+                </div>
+              </div>
+
+              {/* New explanatory text */}
+              <div className="mb-8 p-4 bg-blue-50 rounded-lg border-blue-200 text-blue-800 text-sm">
+                <p className="font-semibold mb-2">לפניכם כלי להערכת הדרכה בית ספרית בתחום דעת.</p>
+                <p>כלי זה מטרותיו: לטייב את תהליכי ההדרכה המתקיימים בבית ספרך/כם; משמש כנק' עצירה להתבוננות על תכנון מול ביצוע בהיבטי הדרכה ובהתייחס ליעדים הבית ספריים.</p>
+                <p className="font-bold mt-2">כלי זה נקרא "כלי להתבוננות על תהליך הדרכה בית ספרית."</p>
+              </div>
+              
+              {/* Hitbonenut questions */}
+              <div className="mb-8">
+                <h3 className="text-xl md:text-2xl font-bold text-blue-700 mb-4">דירוג התבוננות בהדרכה (4-1):</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {hitbonenutQuestions.map(q => renderRating(q, hitbonenutRatings, 'hitbonenut'))}
+                </div>
+              </div>
+              
+              {/* Action buttons */}
+              <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mt-8">
+                <button
+                  onClick={() => generateContent('workPlan')}
+                  disabled={isProcessing || authStatus !== 'authenticated'}
+                  className="w-full sm:w-auto px-6 py-3 bg-green-600 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.962l3-2.671z"></path></svg> : 'צור תוכנית עבודה מקיפה'}
+                </button>
+                <button
+                  onClick={() => generateContent('summary')}
+                  disabled={isProcessing || authStatus !== 'authenticated'}
+                  className="w-full sm:w-auto px-6 py-3 bg-purple-600 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.962l3-2.671z"></path></svg> : 'צור סיכום רפלקטיבי'}
+                </button>
+                <button
+                  onClick={() => generateContent('goals')}
+                  disabled={isProcessing || authStatus !== 'authenticated'}
+                  className="w-full sm:w-auto px-6 py-3 bg-orange-600 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.962l3-2.671z"></path></svg> : 'צור יעדי SMART'}
+                </button>
+                <button
+                  onClick={() => generateContent('controlPlan')}
+                  disabled={isProcessing || authStatus !== 'authenticated'}
+                  className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.962l3-2.671z"></path></svg> : 'צור תוכנית בקרה רבעונית'}
+                </button>
+                <a
+                  href="https://g.co/gemini/share/1e1777eef39d"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:w-auto px-6 py-3 bg-red-600 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 hover:bg-red-700 flex items-center justify-center gap-2"
+                >
+                 לוח גאנט אינטראקטיבי 
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'generated' && (
+          <div className="max-w-4xl mx-auto space-y-8 animate-fade-in-up" ref={documentsRef}>
+            <div className="space-y-6">
+              {generatedPlan && (
+                <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-200">
+                  <h2 className="text-2xl md:text-3xl font-bold text-blue-700 mb-4 text-center">תוכנית עבודה מקיפה</h2>
+                  <div className="prose max-w-none text-gray-700 leading-relaxed" dir="rtl">
+                    <pre className="whitespace-pre-wrap font-sans text-sm md:text-base">{generatedPlan}</pre>
+                  </div>
+                </div>
+              )}
+              {generatedSummary && (
+                <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-200">
+                  <h2 className="text-2xl md:text-3xl font-bold text-blue-700 mb-4 text-center">סיכום רפלקטיבי</h2>
+                  <div className="prose max-w-none text-gray-700 leading-relaxed" dir="rtl">
+                    <pre className="whitespace-pre-wrap font-sans text-sm md:text-base">{generatedSummary}</pre>
+                  </div>
+                </div>
+              )}
+              {generatedGoals && (
+                <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-200">
+                  <h2 className="text-2xl md:text-3xl font-bold text-blue-700 mb-4 text-center">יעדי SMART מפורטים</h2>
+                  <div className="prose max-w-none text-gray-700 leading-relaxed" dir="rtl">
+                    <pre className="whitespace-pre-wrap font-sans text-sm md:text-base">{generatedGoals}</pre>
+                  </div>
+                </div>
+              )}
+              {generatedControlPlan && (
+                <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-200">
+                  <h2 className="text-2xl md:text-3xl font-bold text-blue-700 mb-4 text-center">תוכנית בקרה רבעונית</h2>
+                  <div className="prose max-w-none text-gray-700 leading-relaxed" dir="rtl">
+                    <pre className="whitespace-pre-wrap font-sans text-sm md:text-base">{generatedControlPlan}</pre>
+                  </div>
+                </div>
+              )}
+              {!generatedPlan && !generatedSummary && !generatedGoals && !generatedControlPlan && (
+                <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-200 text-center text-gray-500">
+                  <p>עדיין לא נוצרו תוכניות. בחר לשונית 'הערכה' ומלא את הדירוגים כדי להתחיל.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'chat' && (
+          <div className="max-w-4xl mx-auto flex flex-col h-[70vh] bg-white rounded-2xl shadow-lg border border-gray-200">
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {chatHistory.length === 0 && (
+                <div className="text-center text-gray-400 mt-12">
+                  <p>התחל שיחה עם ה-AI כדי לקבל תובנות נוספות.</p>
+                </div>
+              )}
+              {chatHistory.map((msg, index) => (
+                <div
+                  key={index}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-xs md:max-w-md p-4 rounded-xl shadow-sm ${msg.role === 'user'
+                      ? 'bg-blue-600 text-white rounded-br-none'
+                      : 'bg-gray-200 text-gray-800 rounded-bl-none'
+                    }`}
+                  >
+                    <pre className="whitespace-pre-wrap font-sans text-sm">{msg.text}</pre>
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="p-4 border-t border-gray-200 flex items-center">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') handleChatSend();
+                }}
+                placeholder="כתוב כאן הודעה..."
+                className="flex-1 p-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200"
+              />
+              <button
+                onClick={handleChatSend}
+                disabled={!chatInput.trim() || isProcessing}
+                className="ml-3 px-6 py-3 bg-blue-600 text-white rounded-full shadow-md transition-all duration-300 transform hover:scale-105 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              >
+                {isProcessing ? (
+                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.962l3-2.671z"></path></svg>
+                ) : (
+                  'שלח'
+                )}
+              </button>
+            </div>
+            <div className="p-2 text-center text-xs text-gray-400 bg-gray-50 border-t border-gray-200 rounded-b-2xl">
+              מזהה משתמש: {userId || 'לא מאומת'} | מצב אימות: {authStatus}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default React.memo(App);
